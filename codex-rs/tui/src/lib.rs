@@ -11,7 +11,7 @@ use codex_core::RolloutRecorder;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::ConfigToml;
-use codex_core::config::SWIFTFOX_MEDIUM_MODEL;
+use codex_core::config::GPT_5_CODEX_MEDIUM_MODEL;
 use codex_core::config::find_codex_home;
 use codex_core::config::load_config_as_toml_with_cli_overrides;
 use codex_core::config::persist_model_selection;
@@ -32,6 +32,7 @@ mod app;
 mod app_backtrack;
 mod app_event;
 mod app_event_sender;
+mod backtrack_helpers;
 mod bottom_pane;
 mod chatwidget;
 mod citation_regex;
@@ -41,6 +42,7 @@ pub mod custom_terminal;
 mod diff_render;
 mod exec_command;
 mod file_search;
+mod frames;
 mod get_git_diff;
 mod history_cell;
 pub mod insert_history;
@@ -379,9 +381,9 @@ async fn run_ratatui_app(
         &cli,
         &config,
         active_profile.as_deref(),
-        internal_storage.swiftfox_model_prompt_seen,
+        internal_storage.gpt_5_codex_model_prompt_seen,
     ) {
-        internal_storage.swiftfox_model_prompt_seen = true;
+        internal_storage.gpt_5_codex_model_prompt_seen = true;
         if let Err(e) = internal_storage.persist().await {
             error!("Failed to persist internal storage: {e:?}");
         }
@@ -390,7 +392,7 @@ async fn run_ratatui_app(
         let switch_to_new_model = upgrade_decision == ModelUpgradeDecision::Switch;
 
         if switch_to_new_model {
-            config.model = SWIFTFOX_MEDIUM_MODEL.to_owned();
+            config.model = GPT_5_CODEX_MEDIUM_MODEL.to_owned();
             config.model_reasoning_effort = None;
             if let Err(e) = persist_model_selection(
                 &config.codex_home,
@@ -523,18 +525,13 @@ fn should_show_model_rollout_prompt(
     cli: &Cli,
     config: &Config,
     active_profile: Option<&str>,
-    swiftfox_model_prompt_seen: bool,
+    gpt_5_codex_model_prompt_seen: bool,
 ) -> bool {
     let login_status = get_login_status(config);
-    // TODO(jif) drop.
-    let debug_high_enabled = std::env::var("DEBUG_HIGH")
-        .map(|v| v.eq_ignore_ascii_case("1"))
-        .unwrap_or(false);
 
     active_profile.is_none()
-        && debug_high_enabled
         && cli.model.is_none()
-        && !swiftfox_model_prompt_seen
+        && !gpt_5_codex_model_prompt_seen
         && config.model_provider.requires_openai_auth
         && matches!(login_status, LoginStatus::AuthMode(AuthMode::ChatGPT))
         && !cli.oss
@@ -550,21 +547,7 @@ mod tests {
     use codex_core::auth::write_auth_json;
     use codex_core::token_data::IdTokenInfo;
     use codex_core::token_data::TokenData;
-    use std::sync::Once;
-
-    fn enable_debug_high_env() {
-        static DEBUG_HIGH_ONCE: Once = Once::new();
-        DEBUG_HIGH_ONCE.call_once(|| {
-            // SAFETY: Tests run in a controlled environment and require this env variable to
-            // opt into the GPT-5 High rollout prompt gating. We only set it once.
-            unsafe {
-                std::env::set_var("DEBUG_HIGH", "1");
-            }
-        });
-    }
-
     fn make_config() -> Config {
-        enable_debug_high_env();
         // Create a unique CODEX_HOME per test to isolate auth.json writes.
         let mut codex_home = std::env::temp_dir();
         let unique_suffix = format!(

@@ -1,7 +1,8 @@
+use crate::frames::ALL_VARIANTS as FRAME_VARIANTS;
+use crate::frames::FRAME_TICK_DEFAULT;
 use crate::tui::FrameRequester;
 use crate::tui::Tui;
 use crate::tui::TuiEvent;
-use codex_core::config::SWIFTFOX_MODEL_DISPLAY_NAME;
 use color_eyre::eyre::Result;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -19,68 +20,9 @@ use ratatui::widgets::Wrap;
 use std::time::Duration;
 use tokio_stream::StreamExt;
 
-// Embed animation frames for each variant at compile time.
-macro_rules! frames_for {
-    ($dir:literal) => {
-        [
-            include_str!(concat!("../frames/", $dir, "/frame_000.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_004.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_008.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_012.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_016.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_020.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_024.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_028.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_032.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_036.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_040.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_044.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_048.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_052.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_056.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_060.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_064.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_068.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_072.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_076.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_080.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_084.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_088.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_092.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_096.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_100.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_104.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_108.txt")),
-            include_str!(concat!("../frames/", $dir, "/frame_112.txt")),
-        ]
-    };
-}
-
-const FRAMES_DEFAULT: [&str; 29] = frames_for!("default");
-const FRAMES_CODEX: [&str; 29] = frames_for!("codex");
-const FRAMES_OPENAI: [&str; 29] = frames_for!("openai");
-const FRAMES_BLOCKS: [&str; 29] = frames_for!("blocks");
-const FRAMES_DOTS: [&str; 29] = frames_for!("dots");
-const FRAMES_HASH: [&str; 29] = frames_for!("hash");
-const FRAMES_HBARS: [&str; 29] = frames_for!("hbars");
-const FRAMES_VBARS: [&str; 29] = frames_for!("vbars");
-const FRAMES_SHAPES: [&str; 29] = frames_for!("shapes");
-const FRAMES_SLUG: [&str; 29] = frames_for!("slug");
-
-const VARIANTS: &[&[&str]] = &[
-    &FRAMES_DEFAULT,
-    &FRAMES_CODEX,
-    &FRAMES_OPENAI,
-    &FRAMES_BLOCKS,
-    &FRAMES_DOTS,
-    &FRAMES_HASH,
-    &FRAMES_HBARS,
-    &FRAMES_VBARS,
-    &FRAMES_SHAPES,
-    &FRAMES_SLUG,
-];
-
-const FRAME_TICK: Duration = Duration::from_millis(60);
+const FRAME_TICK: Duration = FRAME_TICK_DEFAULT;
+const MIN_ANIMATION_HEIGHT: u16 = 24;
+const MIN_ANIMATION_WIDTH: u16 = 60;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ModelUpgradeDecision {
@@ -149,11 +91,11 @@ impl ModelUpgradePopup {
     }
 
     fn frames(&self) -> &'static [&'static str] {
-        VARIANTS[self.variant_idx]
+        FRAME_VARIANTS[self.variant_idx]
     }
 
     fn pick_random_variant(&mut self) {
-        let total = VARIANTS.len();
+        let total = FRAME_VARIANTS.len();
         if total <= 1 {
             return;
         }
@@ -180,26 +122,27 @@ impl WidgetRef for &ModelUpgradePopup {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         Clear.render(area, buf);
 
-        let mut lines: Vec<Line> = self.frames()[self.frame_idx]
-            .lines()
-            .map(|l| l.to_string().into())
-            .collect();
+        // Skip the animation entirely when the viewport is too small so we don't clip frames.
+        let show_animation =
+            area.height >= MIN_ANIMATION_HEIGHT && area.width >= MIN_ANIMATION_WIDTH;
 
-        // Spacer between animation and text content.
-        lines.push("".into());
+        let mut lines: Vec<Line> = Vec::new();
+        if show_animation {
+            let frame = self.frames()[self.frame_idx];
+            lines.extend(frame.lines().map(|l| l.into()));
+            // Spacer between animation and text content.
+            lines.push("".into());
+        }
 
-        lines.push(
-            format!(
-                "   Codex is now powered by {SWIFTFOX_MODEL_DISPLAY_NAME}, a new model that is"
-            )
-            .into(),
-        );
         lines.push(Line::from(vec![
-            "   ".into(),
-            "faster, a better collaborator, ".bold(),
-            "and ".into(),
-            "more steerable.".bold(),
+            "  ".into(),
+            "Introducing GPT-5-Codex".bold(),
         ]));
+        lines.push("".into());
+        lines.push(
+            "  GPT-5-Codex works faster through easy tasks and harder on complex tasks,".into(),
+        );
+        lines.push("  improves on code quality, and is more steerable with AGENTS.md.".into());
         lines.push("".into());
 
         let create_option =
@@ -217,12 +160,13 @@ impl WidgetRef for &ModelUpgradePopup {
         lines.push(create_option(
             0,
             ModelUpgradeOption::TryNewModel,
-            &format!("Yes, switch me to {SWIFTFOX_MODEL_DISPLAY_NAME}"),
+            "Try the new GPT-5-Codex model",
         ));
+        lines.push("".into());
         lines.push(create_option(
             1,
             ModelUpgradeOption::KeepCurrent,
-            "Not right now",
+            "Continue using current model",
         ));
         lines.push("".into());
         lines.push(
