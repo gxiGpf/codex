@@ -17,13 +17,16 @@ use crate::exec_events::FileUpdateChange;
 use crate::exec_events::ItemCompletedEvent;
 use crate::exec_events::ItemStartedEvent;
 use crate::exec_events::ItemUpdatedEvent;
+use crate::exec_events::McpToolCallItem;
+use crate::exec_events::McpToolCallStatus;
 use crate::exec_events::PatchApplyStatus;
 use crate::exec_events::PatchChangeKind;
 use crate::exec_events::ReasoningItem;
-use crate::exec_events::SessionCreatedEvent;
+use crate::exec_events::ThreadStartedEvent;
 use crate::exec_events::TodoItem;
 use crate::exec_events::TodoListItem;
 use crate::exec_events::TurnCompletedEvent;
+use crate::exec_events::TurnFailedEvent;
 use crate::exec_events::TurnStartedEvent;
 use crate::exec_events::Usage;
 use codex_core::config::Config;
@@ -36,6 +39,8 @@ use codex_core::protocol::EventMsg;
 use codex_core::protocol::ExecCommandBeginEvent;
 use codex_core::protocol::ExecCommandEndEvent;
 use codex_core::protocol::FileChange;
+use codex_core::protocol::McpToolCallBeginEvent;
+use codex_core::protocol::McpToolCallEndEvent;
 use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::PatchApplyEndEvent;
 use codex_core::protocol::SessionConfiguredEvent;
@@ -53,6 +58,8 @@ pub struct ExperimentalEventProcessorWithJsonOutput {
     // Tracks the todo list for the current turn (at most one per turn).
     running_todo_list: Option<RunningTodoList>,
     last_total_token_usage: Option<codex_core::protocol::TokenUsage>,
+    running_mcp_tool_calls: HashMap<String, RunningMcpToolCall>,
+    last_critical_error: Option<ConversationErrorEvent>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +74,13 @@ struct RunningTodoList {
     items: Vec<TodoItem>,
 }
 
+#[derive(Debug, Clone)]
+struct RunningMcpToolCall {
+    server: String,
+    tool: String,
+    item_id: String,
+}
+
 impl ExperimentalEventProcessorWithJsonOutput {
     pub fn new(last_message_path: Option<PathBuf>) -> Self {
         Self {
@@ -76,6 +90,8 @@ impl ExperimentalEventProcessorWithJsonOutput {
             running_patch_applies: HashMap::new(),
             running_todo_list: None,
             last_total_token_usage: None,
+            running_mcp_tool_calls: HashMap::new(),
+            last_critical_error: None,
         }
     }
 
@@ -86,6 +102,8 @@ impl ExperimentalEventProcessorWithJsonOutput {
             EventMsg::AgentReasoning(ev) => self.handle_reasoning_event(ev),
             EventMsg::ExecCommandBegin(ev) => self.handle_exec_command_begin(ev),
             EventMsg::ExecCommandEnd(ev) => self.handle_exec_command_end(ev),
+            EventMsg::McpToolCallBegin(ev) => self.handle_mcp_tool_call_begin(ev),
+            EventMsg::McpToolCallEnd(ev) => self.handle_mcp_tool_call_end(ev),
             EventMsg::PatchApplyBegin(ev) => self.handle_patch_apply_begin(ev),
             EventMsg::PatchApplyEnd(ev) => self.handle_patch_apply_end(ev),
             EventMsg::TokenCount(ev) => {
@@ -96,9 +114,13 @@ impl ExperimentalEventProcessorWithJsonOutput {
             }
             EventMsg::TaskStarted(ev) => self.handle_task_started(ev),
             EventMsg::TaskComplete(_) => self.handle_task_complete(),
-            EventMsg::Error(ev) => vec![ConversationEvent::Error(ConversationErrorEvent {
-                message: ev.message.clone(),
-            })],
+            EventMsg::Error(ev) => {
+                let error = ConversationErrorEvent {
+                    message: ev.message.clone(),
+                };
+                self.last_critical_error = Some(error.clone());
+                vec![ConversationEvent::Error(error)]
+            }
             EventMsg::StreamError(ev) => vec![ConversationEvent::Error(ConversationErrorEvent {
                 message: ev.message.clone(),
             })],
@@ -119,8 +141,8 @@ impl ExperimentalEventProcessorWithJsonOutput {
         &self,
         payload: &SessionConfiguredEvent,
     ) -> Vec<ConversationEvent> {
-        vec![ConversationEvent::SessionCreated(SessionCreatedEvent {
-            session_id: payload.session_id.to_string(),
+        vec![ConversationEvent::ThreadStarted(ThreadStartedEvent {
+            thread_id: payload.session_id.to_string(),
         })]
     }
 
@@ -184,6 +206,68 @@ impl ExperimentalEventProcessorWithJsonOutput {
         };
 
         vec![ConversationEvent::ItemStarted(ItemStartedEvent { item })]
+    }
+
+    fn handle_mcp_tool_call_begin(&mut self, ev: &McpToolCallBeginEvent) -> Vec<ConversationEvent> {
+        let item_id = self.get_next_item_id();
+        let server = ev.invocation.server.clone();
+        let tool = ev.invocation.tool.clone();
+
+        self.running_mcp_tool_calls.insert(
+            ev.call_id.clone(),
+            RunningMcpToolCall {
+                server: server.clone(),
+                tool: tool.clone(),
+                item_id: item_id.clone(),
+            },
+        );
+
+        let item = ConversationItem {
+            id: item_id,
+            details: ConversationItemDetails::McpToolCall(McpToolCallItem {
+                server,
+                tool,
+                status: McpToolCallStatus::InProgress,
+            }),
+        };
+
+        vec![ConversationEvent::ItemStarted(ItemStartedEvent { item })]
+    }
+
+    fn handle_mcp_tool_call_end(&mut self, ev: &McpToolCallEndEvent) -> Vec<ConversationEvent> {
+        let status = if ev.is_success() {
+            McpToolCallStatus::Completed
+        } else {
+            McpToolCallStatus::Failed
+        };
+
+        let (server, tool, item_id) = match self.running_mcp_tool_calls.remove(&ev.call_id) {
+            Some(running) => (running.server, running.tool, running.item_id),
+            None => {
+                warn!(
+                    call_id = ev.call_id,
+                    "Received McpToolCallEnd without begin; synthesizing new item"
+                );
+                (
+                    ev.invocation.server.clone(),
+                    ev.invocation.tool.clone(),
+                    self.get_next_item_id(),
+                )
+            }
+        };
+
+        let item = ConversationItem {
+            id: item_id,
+            details: ConversationItemDetails::McpToolCall(McpToolCallItem {
+                server,
+                tool,
+                status,
+            }),
+        };
+
+        vec![ConversationEvent::ItemCompleted(ItemCompletedEvent {
+            item,
+        })]
     }
 
     fn handle_patch_apply_begin(&mut self, ev: &PatchApplyBeginEvent) -> Vec<ConversationEvent> {
@@ -296,7 +380,8 @@ impl ExperimentalEventProcessorWithJsonOutput {
         vec![ConversationEvent::ItemStarted(ItemStartedEvent { item })]
     }
 
-    fn handle_task_started(&self, _: &TaskStartedEvent) -> Vec<ConversationEvent> {
+    fn handle_task_started(&mut self, _: &TaskStartedEvent) -> Vec<ConversationEvent> {
+        self.last_critical_error = None;
         vec![ConversationEvent::TurnStarted(TurnStartedEvent {})]
     }
 
@@ -325,9 +410,13 @@ impl ExperimentalEventProcessorWithJsonOutput {
             }));
         }
 
-        items.push(ConversationEvent::TurnCompleted(TurnCompletedEvent {
-            usage,
-        }));
+        if let Some(error) = self.last_critical_error.take() {
+            items.push(ConversationEvent::TurnFailed(TurnFailedEvent { error }));
+        } else {
+            items.push(ConversationEvent::TurnCompleted(TurnCompletedEvent {
+                usage,
+            }));
+        }
 
         items
     }
