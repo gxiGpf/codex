@@ -1,16 +1,19 @@
 export type {
-  ConversationEvent,
-  SessionCreatedEvent,
+  ThreadEvent,
+  ThreadStartedEvent,
   TurnStartedEvent,
   TurnCompletedEvent,
+  TurnFailedEvent,
   ItemStartedEvent,
   ItemUpdatedEvent,
   ItemCompletedEvent,
-  ConversationErrorEvent,
+  ThreadError,
+  ThreadErrorEvent,
+  Usage,
 } from "./events";
 export type {
-  ConversationItem,
-  AssistantMessageItem,
+  ThreadItem,
+  AgentMessageItem,
   ReasoningItem,
   CommandExecutionItem,
   FileChangeItem,
@@ -20,8 +23,12 @@ export type {
   ErrorItem,
 } from "./items";
 
-export type { Thread, RunResult, RunStreamedResult, Input } from "./thread";
+export { Thread } from "./thread";
+export type { RunResult, RunStreamedResult, Input } from "./thread";
 
-export type { Codex } from "./codex";
+export { Codex } from "./codex";
 
 export type { CodexOptions } from "./codexOptions";
+
+export type { ThreadOptions, ApprovalMode, SandboxMode } from "./threadOptions";
+export type { TurnOptions } from "./turnOptions";

@@ -6,6 +6,8 @@ use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::error::CodexErr;
 use crate::error::Result;
+use crate::error::RetryLimitReachedError;
+use crate::error::UnexpectedResponseError;
 use crate::model_family::ModelFamily;
 use crate::openai_tools::create_tools_json_for_chat_completions_api;
 use crate::util::backoff;
@@ -320,11 +322,18 @@ pub(crate) async fn stream_chat_completions(
                 let status = res.status();
                 if !(status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()) {
                     let body = (res.text().await).unwrap_or_default();
-                    return Err(CodexErr::UnexpectedStatus(status, body));
+                    return Err(CodexErr::UnexpectedStatus(UnexpectedResponseError {
+                        status,
+                        body,
+                        request_id: None,
+                    }));
                 }
 
                 if attempt > max_retries {
-                    return Err(CodexErr::RetryLimit(status));
+                    return Err(CodexErr::RetryLimit(RetryLimitReachedError {
+                        status,
+                        request_id: None,
+                    }));
                 }
 
                 let retry_after_secs = res
@@ -380,10 +389,12 @@ async fn process_chat_sse<S>(
     let mut reasoning_text = String::new();
 
     loop {
-        let sse = match otel_event_manager
-            .log_sse_event(|| timeout(idle_timeout, stream.next()))
-            .await
-        {
+        let start = std::time::Instant::now();
+        let response = timeout(idle_timeout, stream.next()).await;
+        let duration = start.elapsed();
+        otel_event_manager.log_sse_event(&response, duration);
+
+        let sse = match response {
             Ok(Some(Ok(ev))) => ev,
             Ok(Some(Err(e))) => {
                 let _ = tx_event

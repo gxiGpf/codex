@@ -4,20 +4,16 @@ import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 
 import { Codex } from "@openai/codex-sdk";
-import type { ConversationEvent, ConversationItem } from "@openai/codex-sdk";
-import path from "node:path";
+import type { ThreadEvent, ThreadItem } from "@openai/codex-sdk";
+import { codexPathOverride } from "./helpers.ts";
 
-const executablePath =
-  process.env.CODEX_EXECUTABLE ??
-  path.join(process.cwd(), "..", "..", "codex-rs", "target", "debug", "codex");
-
-const codex = new Codex({ executablePath });
+const codex = new Codex({ codexPathOverride: codexPathOverride() });
 const thread = codex.startThread();
 const rl = createInterface({ input, output });
 
-const handleItemCompleted = (item: ConversationItem): void => {
-  switch (item.item_type) {
-    case "assistant_message":
+const handleItemCompleted = (item: ThreadItem): void => {
+  switch (item.type) {
+    case "agent_message":
       console.log(`Assistant: ${item.text}`);
       break;
     case "reasoning":
@@ -37,8 +33,8 @@ const handleItemCompleted = (item: ConversationItem): void => {
   }
 };
 
-const handleItemUpdated = (item: ConversationItem): void => {
-  switch (item.item_type) {
+const handleItemUpdated = (item: ThreadItem): void => {
+  switch (item.type) {
     case "todo_list": {
       console.log(`Todo:`);
       for (const todo of item.items) {
@@ -49,7 +45,7 @@ const handleItemUpdated = (item: ConversationItem): void => {
   }
 };
 
-const handleEvent = (event: ConversationEvent): void => {
+const handleEvent = (event: ThreadEvent): void => {
   switch (event.type) {
     case "item.completed":
       handleItemCompleted(event.item);
@@ -62,6 +58,9 @@ const handleEvent = (event: ConversationEvent): void => {
       console.log(
         `Used ${event.usage.input_tokens} input tokens, ${event.usage.cached_input_tokens} cached input tokens, ${event.usage.output_tokens} output tokens.`,
       );
+      break;
+    case "turn.failed":
+      console.error(`Turn failed: ${event.error.message}`);
       break;
   }
 };

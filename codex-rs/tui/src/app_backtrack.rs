@@ -9,7 +9,7 @@ use crate::pager_overlay::Overlay;
 use crate::tui;
 use crate::tui::TuiEvent;
 use codex_core::protocol::ConversationPathResponseEvent;
-use codex_protocol::mcp_protocol::ConversationId;
+use codex_protocol::ConversationId;
 use color_eyre::eyre::Result;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -134,8 +134,9 @@ impl App {
     /// Useful when switching sessions to ensure prior history remains visible.
     pub(crate) fn render_transcript_once(&mut self, tui: &mut tui::Tui) {
         if !self.transcript_cells.is_empty() {
+            let width = tui.terminal.last_known_screen_size.width;
             for cell in &self.transcript_cells {
-                tui.insert_history_lines(cell.transcript_lines());
+                tui.insert_history_lines(cell.display_lines(width));
             }
         }
     }
