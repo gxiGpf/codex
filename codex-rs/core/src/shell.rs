@@ -188,18 +188,7 @@ pub async fn default_user_shell() -> Shell {
         .await
         .map(|o| o.status.success())
         .unwrap_or(false);
-    let bash_exe = if Command::new("bash.exe")
-        .arg("--version")
-        .output()
-        .await
-        .ok()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
-        which::which("bash.exe").ok()
-    } else {
-        None
-    };
+    let bash_exe = which::which("bash.exe").ok();
 
     if has_pwsh {
         Shell::PowerShell(PowerShellConfig {
